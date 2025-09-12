@@ -169,7 +169,7 @@ def detect(save_img=False):
     (save_dir / 'labels' if save_txt else save_dir).mkdir(parents=True, exist_ok=True)  # make dir
     # initialize deepsort
     cfg_deep = get_config()
-    cfg_deep.merge_from_file(""deep_sort_pytorch/configs/deep_sort.yaml"")
+    cfg_deep.merge_from_file("deep_sort_pytorch/configs/deep_sort.yaml")
     deepsort = DeepSort(cfg_deep.DEEPSORT.REID_CKPT,
                         max_dist=cfg_deep.DEEPSORT.MAX_DIST, min_confidence=cfg_deep.DEEPSORT.MIN_CONFIDENCE,
                         nms_max_overlap=cfg_deep.DEEPSORT.NMS_MAX_OVERLAP, max_iou_distance=cfg_deep.DEEPSORT.MAX_IOU_DISTANCE,
