@@ -19,6 +19,7 @@ from deep_sort_pytorch.utils.parser import get_config
 from deep_sort_pytorch.deep_sort import DeepSort
 from collections import deque
 import numpy as np
+import json
 palette = (2 ** 11 - 1, 2 ** 15 - 1, 2 ** 20 - 1)
 data_deque = {}
 
@@ -295,6 +296,18 @@ def detect(save_img=False):
                     object_id = outputs[:, -1]
 
                     draw_boxes(im0, bbox_xyxy, names, object_id,identities)
+                    
+                    # ---- JSON dump the tracking data for this frame ----
+                    tracked_objects = []
+                    for bbox, id, cls in zip(bbox_xyxy.tolist(), identities.tolist(), object_id.tolist()):
+                        tracked_objects.append({
+                            "bbox": bbox,        # [x1, y1, x2, y2]
+                            "id": int(id),       # tracker ID
+                            "class": int(cls)    # object class
+                        })
+                    print("JSON_OUTPUT:" + json.dumps(tracked_objects))  # prefix helps filtering
+                    
+            
             # Print time (inference + NMS)
             print(f'{s}Done. ({(1E3 * (t2 - t1)):.1f}ms) Inference, ({(1E3 * (t3 - t2)):.1f}ms) NMS')
 
