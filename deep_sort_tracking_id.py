@@ -1,6 +1,7 @@
 import argparse
 import time
 from pathlib import Path
+import sys
 
 import cv2
 import torch
@@ -212,135 +213,148 @@ def detect(save_img=False):
     names = load_classes(names)
     #colors = [[random.randint(0, 255) for _ in range(3)] for _ in names]
 
-    # Run inference
-    if device.type != 'cpu':
-        model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
-    old_img_w = old_img_h = imgsz
-    old_img_b = 1
+    # Keep the script alive to prevent models from reloading
+    for line in sys.stdin:   # outer loop = parent keeps feeding paths
+        req = json.loads(line)
+        frame_path = req["frame_path"]
 
-    t0 = time.time()
-    for path, img, im0s, vid_cap in dataset:
-        img = torch.from_numpy(img).to(device)
-        img = img.half() if half else img.float()  # uint8 to fp16/32
-        img /= 255.0  # 0 - 255 to 0.0 - 1.0
-        if img.ndimension() == 3:
-            img = img.unsqueeze(0)
+        # build a "dataset" with just this one frame
+        dataset = LoadImages(frame_path, img_size=imgsz)
 
-        # Warmup
-        if device.type != 'cpu' and (old_img_b != img.shape[0] or old_img_h != img.shape[2] or old_img_w != img.shape[3]):
-            old_img_b = img.shape[0]
-            old_img_h = img.shape[2]
-            old_img_w = img.shape[3]
-            for i in range(3):
-                model(img, augment=opt.augment)[0]
+        # Run inference
+        if device.type != 'cpu':
+            model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
+        old_img_w = old_img_h = imgsz
+        old_img_b = 1
 
-        # Inference
-        t1 = time_synchronized()
-        with torch.no_grad():   # Calculating gradients would cause a GPU memory leak
-            pred = model(img, augment=opt.augment)[0]
-        t2 = time_synchronized()
+        t0 = time.time()
+        for path, img, im0s, vid_cap in dataset:
+            img = torch.from_numpy(img).to(device)
+            img = img.half() if half else img.float()  # uint8 to fp16/32
+            img /= 255.0  # 0 - 255 to 0.0 - 1.0
+            if img.ndimension() == 3:
+                img = img.unsqueeze(0)
 
-        # Apply NMS
-        pred = non_max_suppression(pred, opt.conf_thres, opt.iou_thres, classes=opt.classes, agnostic=opt.agnostic_nms)
-        t3 = time_synchronized()
+            # Warmup
+            if device.type != 'cpu' and (old_img_b != img.shape[0] or old_img_h != img.shape[2] or old_img_w != img.shape[3]):
+                old_img_b = img.shape[0]
+                old_img_h = img.shape[2]
+                old_img_w = img.shape[3]
+                for i in range(3):
+                    model(img, augment=opt.augment)[0]
 
-        # Apply Classifier
-        if classify:
-            pred = apply_classifier(pred, modelc, img, im0s)
+            # Inference
+            t1 = time_synchronized()
+            with torch.no_grad():   # Calculating gradients would cause a GPU memory leak
+                pred = model(img, augment=opt.augment)[0]
+            t2 = time_synchronized()
 
-        # Process detections
-        for i, det in enumerate(pred):  # detections per image
-            if webcam:  # batch_size >= 1
-                p, s, im0, frame = path[i], '%g: ' % i, im0s[i].copy(), dataset.count
-            else:
-                p, s, im0, frame = path, '', im0s, getattr(dataset, 'frame', 0)
+            # Apply NMS
+            pred = non_max_suppression(pred, opt.conf_thres, opt.iou_thres, classes=opt.classes, agnostic=opt.agnostic_nms)
+            t3 = time_synchronized()
 
-            p = Path(p)  # to Path
-            save_path = str(save_dir / p.name)  # img.jpg
-            txt_path = str(save_dir / 'labels' / p.stem) + ('' if dataset.mode == 'image' else f'_{frame}')  # img.txt
-            gn = torch.tensor(im0.shape)[[1, 0, 1, 0]]  # normalization gain whwh
-            if len(det):
-                # Rescale boxes from img_size to im0 size
-                det[:, :4] = scale_coords(img.shape[2:], det[:, :4], im0.shape).round()
+            # Apply Classifier
+            if classify:
+                pred = apply_classifier(pred, modelc, img, im0s)
 
-                # Print results
-                for c in det[:, -1].unique():
-                    n = (det[:, -1] == c).sum()  # detections per class
-                    s += '%g %ss, ' % (n, names[int(c)])  # add to string
-                xywh_bboxs = []
-                confs = []
-                oids = []
-                # Write results
-                for *xyxy, conf, cls in reversed(det):
-                    x_c, y_c, bbox_w, bbox_h = xyxy_to_xywh(*xyxy)
-                    xywh_obj = [x_c, y_c, bbox_w, bbox_h]
-                    xywh_bboxs.append(xywh_obj)
-                    confs.append([conf.item()])
-                    oids.append(int(cls))
-                    if save_txt:  # Write to file
-                        xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
-                        line = (cls, *xywh, conf) if opt.save_conf else (cls, *xywh)  # label format
-                        with open(txt_path + '.txt', 'a') as f:
-                            f.write(('%g ' * len(line)).rstrip() % line + '\n')
+            # Process detections
+            for i, det in enumerate(pred):  # detections per image
+                if webcam:  # batch_size >= 1
+                    p, s, im0, frame = path[i], '%g: ' % i, im0s[i].copy(), dataset.count
+                else:
+                    p, s, im0, frame = path, '', im0s, getattr(dataset, 'frame', 0)
 
-                    if save_img or view_img:  # Add bbox to image
-                        label = f'{names[int(cls)]} {conf:.2f}'
-                        plot_one_box(xyxy, im0, label=label, color=(0,0,255), line_thickness=3)
-                xywhs = torch.Tensor(xywh_bboxs)
-                confss = torch.Tensor(confs)
+                p = Path(p)  # to Path
+                save_path = str(save_dir / p.name)  # img.jpg
+                txt_path = str(save_dir / 'labels' / p.stem) + ('' if dataset.mode == 'image' else f'_{frame}')  # img.txt
+                gn = torch.tensor(im0.shape)[[1, 0, 1, 0]]  # normalization gain whwh
+                if len(det):
+                    # Rescale boxes from img_size to im0 size
+                    det[:, :4] = scale_coords(img.shape[2:], det[:, :4], im0.shape).round()
+
+                    # Print results
+                    for c in det[:, -1].unique():
+                        n = (det[:, -1] == c).sum()  # detections per class
+                        s += '%g %ss, ' % (n, names[int(c)])  # add to string
+                    xywh_bboxs = []
+                    confs = []
+                    oids = []
+                    # Write results
+                    for *xyxy, conf, cls in reversed(det):
+                        x_c, y_c, bbox_w, bbox_h = xyxy_to_xywh(*xyxy)
+                        xywh_obj = [x_c, y_c, bbox_w, bbox_h]
+                        xywh_bboxs.append(xywh_obj)
+                        confs.append([conf.item()])
+                        oids.append(int(cls))
+                        if save_txt:  # Write to file
+                            xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
+                            line = (cls, *xywh, conf) if opt.save_conf else (cls, *xywh)  # label format
+                            with open(txt_path + '.txt', 'a') as f:
+                                f.write(('%g ' * len(line)).rstrip() % line + '\n')
+
+                        if save_img or view_img:  # Add bbox to image
+                            label = f'{names[int(cls)]} {conf:.2f}'
+                            plot_one_box(xyxy, im0, label=label, color=(0,0,255), line_thickness=3)
+                    xywhs = torch.Tensor(xywh_bboxs)
+                    confss = torch.Tensor(confs)
+                    
+                    outputs = deepsort.update(xywhs, confss, oids, im0)
+                    if len(outputs) > 0:
+                        bbox_xyxy = outputs[:, :4]
+                        identities = outputs[:, -2]
+                        object_id = outputs[:, -1]
+
+                        draw_boxes(im0, bbox_xyxy, names, object_id,identities)
+                        
+                        # ---- JSON dump the tracking data for this frame ----
+                        tracked_objects = []
+                        for bbox, id, cls in zip(bbox_xyxy.tolist(), identities.tolist(), object_id.tolist()):
+                            tracked_objects.append({
+                                "bbox": bbox,        # [x1, y1, x2, y2]
+                                "id": int(id),       # tracker ID
+                                "class": int(cls)    # object class
+                            })
+                        print("JSON_OUTPUT:" + json.dumps(tracked_objects))  # prefix helps filtering
+                        
                 
-                outputs = deepsort.update(xywhs, confss, oids, im0)
-                if len(outputs) > 0:
-                    bbox_xyxy = outputs[:, :4]
-                    identities = outputs[:, -2]
-                    object_id = outputs[:, -1]
+                # Print time (inference + NMS)
+                print(f'{s}Done. ({(1E3 * (t2 - t1)):.1f}ms) Inference, ({(1E3 * (t3 - t2)):.1f}ms) NMS')
 
-                    draw_boxes(im0, bbox_xyxy, names, object_id,identities)
-                    
-                    # ---- JSON dump the tracking data for this frame ----
-                    tracked_objects = []
-                    for bbox, id, cls in zip(bbox_xyxy.tolist(), identities.tolist(), object_id.tolist()):
-                        tracked_objects.append({
-                            "bbox": bbox,        # [x1, y1, x2, y2]
-                            "id": int(id),       # tracker ID
-                            "class": int(cls)    # object class
-                        })
-                    print("JSON_OUTPUT:" + json.dumps(tracked_objects))  # prefix helps filtering
-                    
-            
-            # Print time (inference + NMS)
-            print(f'{s}Done. ({(1E3 * (t2 - t1)):.1f}ms) Inference, ({(1E3 * (t3 - t2)):.1f}ms) NMS')
+                # Stream results
+                # if view_img:
+                #     cv2.imshow(str(p), im0)
+                #     cv2.waitKey(1)  # 1 millisecond
 
-            # Stream results
-            # if view_img:
-            #     cv2.imshow(str(p), im0)
-            #     cv2.waitKey(1)  # 1 millisecond
+                # Save results (image with detections)
+                if save_img:
+                    if dataset.mode == 'image':
+                        cv2.imwrite(save_path, im0)
+                        print(f" The image with the result is saved in: {save_path}")
+                    else:  # 'video' or 'stream'
+                        if vid_path != save_path:  # new video
+                            vid_path = save_path
+                            if isinstance(vid_writer, cv2.VideoWriter):
+                                vid_writer.release()  # release previous video writer
+                            if vid_cap:  # video
+                                fps = vid_cap.get(cv2.CAP_PROP_FPS)
+                                w = int(vid_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                                h = int(vid_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                            else:  # stream
+                                fps, w, h = 30, im0.shape[1], im0.shape[0]
+                                save_path += '.mp4'
+                            vid_writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
+                        vid_writer.write(im0)
 
-            # Save results (image with detections)
-            if save_img:
-                if dataset.mode == 'image':
-                    cv2.imwrite(save_path, im0)
-                    print(f" The image with the result is saved in: {save_path}")
-                else:  # 'video' or 'stream'
-                    if vid_path != save_path:  # new video
-                        vid_path = save_path
-                        if isinstance(vid_writer, cv2.VideoWriter):
-                            vid_writer.release()  # release previous video writer
-                        if vid_cap:  # video
-                            fps = vid_cap.get(cv2.CAP_PROP_FPS)
-                            w = int(vid_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                            h = int(vid_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                        else:  # stream
-                            fps, w, h = 30, im0.shape[1], im0.shape[0]
-                            save_path += '.mp4'
-                        vid_writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
-                    vid_writer.write(im0)
+        if save_txt or save_img:
+            s = f"\n{len(list(save_dir.glob('labels/*.txt')))} labels saved to {save_dir / 'labels'}" if save_txt else ''
+            #print(f"Results saved to {save_dir}{s}")
 
-    if save_txt or save_img:
-        s = f"\n{len(list(save_dir.glob('labels/*.txt')))} labels saved to {save_dir / 'labels'}" if save_txt else ''
-        #print(f"Results saved to {save_dir}{s}")
+        print(f'Done. ({time.time() - t0:.3f}s)')
 
-    print(f'Done. ({time.time() - t0:.3f}s)')
+        # Signal completion to Colab
+        result = {"status": "done", "info": "Finished processing"}
+        print("JSON_OUTPUT:", json.dumps({"status": "done"}))
+        sys.stdout.flush()
 
 
 if __name__ == '__main__':
