@@ -214,8 +214,14 @@ def detect(save_img=False):
     #colors = [[random.randint(0, 255) for _ in range(3)] for _ in names]
 
     # Keep the script alive to prevent models from reloading
-    for line in sys.stdin:   # outer loop = parent keeps feeding paths
-        req = json.loads(line)
+    if opt.non_blocking:
+        # non-blocking: wrap the source path in a list
+        lines = [{"frame_path": opt.source}]
+    else:
+        # blocking: read from stdin
+        lines = (json.loads(line) for line in sys.stdin)
+
+    for req in lines:   # outer loop = parent keeps feeding paths
         frame_path = req["frame_path"]
 
         # build a "dataset" with just this one frame
@@ -380,6 +386,7 @@ if __name__ == '__main__':
     parser.add_argument('--exist-ok', action='store_true', help='existing project/name ok, do not increment')
     parser.add_argument('--no-trace', action='store_true', help='don`t trace model')
     parser.add_argument('--trailslen', type=int, default=64, help='trails size (new parameter)')
+    parser.add_argument('--non-blocking', action='store_true', help="Disable blocking behavior")
     opt = parser.parse_args()
     print(opt)
     #check_requirements(exclude=('pycocotools', 'thop'))
