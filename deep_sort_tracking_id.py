@@ -309,12 +309,13 @@ def detect(save_img=False):
                         # ---- JSON dump the tracking data for this frame ----
                         tracked_objects = []
                         for bbox, id, cls in zip(bbox_xyxy.tolist(), identities.tolist(), object_id.tolist()):
-                            tracked_objects.append({
-                                "bbox": bbox,        # [x1, y1, x2, y2]
-                                "id": int(id),       # tracker ID
-                                "class": int(cls)    # object class
-                            })
-                        print("JSON_OUTPUT:" + json.dumps(tracked_objects))  # prefix helps filtering
+                            if int(cls) == 0:
+                                tracked_objects.append({
+                                    "bbox": bbox,        # [x1, y1, x2, y2]
+                                    "id": int(id),       # tracker ID
+                                    "class": int(cls)    # object class
+                                })
+                            print("JSON_OUTPUT:" + json.dumps(tracked_objects))  # prefix helps filtering
                         
                 
                 # Print time (inference + NMS)
