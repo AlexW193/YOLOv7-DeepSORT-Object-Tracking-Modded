@@ -305,6 +305,8 @@ def detect(save_img=False):
                     confss = torch.Tensor(confs)
                     
                     outputs = deepsort.update(xywhs, confss, oids, im0)
+                    print("Current active IDs:", [t.track_id for t in deepsort.tracker.tracks])
+
                     if len(outputs) > 0:
                         bbox_xyxy = outputs[:, :4]
                         identities = outputs[:, -2]
