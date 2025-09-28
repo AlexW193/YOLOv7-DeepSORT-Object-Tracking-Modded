@@ -323,6 +323,7 @@ def detect(save_img=False):
                                     "id": int(id),       # tracker ID
                                     "class": int(cls)    # object class
                                 })
+                        if tracked_objects:
                             print("JSON_OUTPUT:" + json.dumps(tracked_objects))  # prefix helps filtering
                         
                 
