@@ -350,7 +350,7 @@ def detect(save_img=False):
                         object_id = outputs[:, -1]
 
                         data_deque_cam = deques_per_cam[camera_id]
-                        draw_boxes(im0, bbox_xyxy, names, object_id, identities, data_deque_cam)
+                        draw_boxes(im0, bbox_xyxy, names, object_id, identities=identities, data_deque_for_cam=data_deque_cam)
                         
                         # ---- JSON dump the tracking data for this frame ----
                         tracked_objects = []
