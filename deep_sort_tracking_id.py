@@ -111,50 +111,71 @@ def UI_box(x, img, color=None, label=None, line_thickness=None):
 
 
 
-def draw_boxes(img, bbox, names,object_id, identities=None, offset=(0, 0)):
-    #cv2.line(img, line[0], line[1], (46,162,112), 3)
+def draw_boxes(img, bbox, names, object_id, identities=None, offset=(0, 0), data_deque_for_cam=None):
+    """
+    Draw boxes and trails on `img`.
+
+    Args:
+        img: image to draw on
+        bbox: array-like of [x1,y1,x2,y2]
+        names: class names list
+        object_id: array-like of class ids for each box
+        identities: array-like of tracker ids (same length as bbox)
+        offset: tuple for offsetting coords
+        data_deque_for_cam: dict mapping tid -> deque for this camera
+    """
+    # fallback to global (kept for backward compatibility)
+    global data_deque
+    if data_deque_for_cam is None:
+        data_deque_for_cam = data_deque
 
     height, width, _ = img.shape
+
+    # ensure identities is list of ints for membership checks
+    if identities is None:
+        identities_list = []
+    else:
+        identities_list = [int(x) for x in identities]
+
     # remove tracked point from buffer if object is lost
-    for key in list(data_deque):
-      if key not in identities:
-        data_deque.pop(key)
+    for key in list(data_deque_for_cam.keys()):
+        if int(key) not in identities_list:
+            data_deque_for_cam.pop(key, None)
 
     for i, box in enumerate(bbox):
-        x1, y1, x2, y2 = [int(i) for i in box]
+        x1, y1, x2, y2 = [int(x) for x in box]
         x1 += offset[0]
         x2 += offset[0]
         y1 += offset[1]
         y2 += offset[1]
 
-        # code to find center of bottom edge
-        center = (int((x2+x1)/ 2), int((y2+y2)/2))
+        # center of bottom edge
+        center = (int((x2 + x1) / 2), int((y2 + y1) / 2))
 
-        # get ID of object
-        id = int(identities[i]) if identities is not None else 0
+        # tracker id (tid)
+        tid = int(identities[i]) if identities is not None else 0
 
         # create new buffer for new object
-        if id not in data_deque:  
-          data_deque[id] = deque(maxlen= opt.trailslen)
-          #speed_line_queue[id] = [] ##
+        if tid not in data_deque_for_cam:
+            data_deque_for_cam[tid] = deque(maxlen=opt.trailslen)
 
         color = compute_color_for_labels(object_id[i])
         obj_name = names[object_id[i]]
-        label = '{}{:d}'.format("", id) + ":"+ '%s' % (obj_name)
+        label = f'{tid}:{obj_name}'
 
         # add center to buffer
-        data_deque[id].appendleft(center)
+        data_deque_for_cam[tid].appendleft(center)
         UI_box(box, img, label=label, color=color, line_thickness=2)
+
         # draw trail
-        for i in range(1, len(data_deque[id])):
-            # check if on buffer value is none
-            if data_deque[id][i - 1] is None or data_deque[id][i] is None:
+        for j in range(1, len(data_deque_for_cam[tid])):
+            if data_deque_for_cam[tid][j - 1] is None or data_deque_for_cam[tid][j] is None:
                 continue
-            # generate dynamic thickness of trails
-            thickness = int(np.sqrt(opt.trailslen / float(i + i)) * 1.5)
-            # draw trails
-            cv2.line(img, data_deque[id][i - 1], data_deque[id][i], color, thickness)
+            thickness = int(np.sqrt(opt.trailslen / float(j + j)) * 1.5)
+            cv2.line(img, data_deque_for_cam[tid][j - 1], data_deque_for_cam[tid][j], color, thickness)
+
     return img
+
 def load_classes(path):
     # Loads *.names file at 'path'
     with open(path, 'r') as f:
@@ -172,11 +193,9 @@ def detect(save_img=False):
     # initialize deepsort
     cfg_deep = get_config()
     cfg_deep.merge_from_file("deep_sort_pytorch/configs/deep_sort.yaml")
-    deepsort = DeepSort(cfg_deep.DEEPSORT.REID_CKPT,
-                        max_dist=cfg_deep.DEEPSORT.MAX_DIST, min_confidence=cfg_deep.DEEPSORT.MIN_CONFIDENCE,
-                        nms_max_overlap=cfg_deep.DEEPSORT.NMS_MAX_OVERLAP, max_iou_distance=cfg_deep.DEEPSORT.MAX_IOU_DISTANCE,
-                        max_age=cfg_deep.DEEPSORT.MAX_AGE, n_init=cfg_deep.DEEPSORT.N_INIT, nn_budget=cfg_deep.DEEPSORT.NN_BUDGET,
-                        use_cuda=True)
+    # ---- Replace single instance with dict for lazy-per-camera instances ----
+    deepsorts = {}        # maps camera_id -> DeepSort instance
+    deques_per_cam = {}   # maps camera_id -> data_deque dict for trails
 
     # Initialize
     set_logging()
@@ -223,6 +242,23 @@ def detect(save_img=False):
 
     for req in lines:   # outer loop = parent keeps feeding paths
         frame_path = req["frame_path"]
+        camera_id = str(req.get("camera_id", "0"))  # ensure string key
+
+        # lazy-create DeepSort instance for this camera if not exist
+        if camera_id not in deepsorts:
+            deepsorts[camera_id] = DeepSort(
+                cfg_deep.DEEPSORT.REID_CKPT,
+                max_dist=cfg_deep.DEEPSORT.MAX_DIST,
+                min_confidence=cfg_deep.DEEPSORT.MIN_CONFIDENCE,
+                nms_max_overlap=cfg_deep.DEEPSORT.NMS_MAX_OVERLAP,
+                max_iou_distance=cfg_deep.DEEPSORT.MAX_IOU_DISTANCE,
+                max_age=cfg_deep.DEEPSORT.MAX_AGE,
+                n_init=cfg_deep.DEEPSORT.N_INIT,
+                nn_budget=cfg_deep.DEEPSORT.NN_BUDGET,
+                use_cuda=True
+            )
+            # create per-camera trail buffer
+            deques_per_cam[camera_id] = {}
 
         # build a "dataset" with just this one frame
         dataset = LoadImages(frame_path, img_size=imgsz)
@@ -304,15 +340,17 @@ def detect(save_img=False):
                     xywhs = torch.Tensor(xywh_bboxs)
                     confss = torch.Tensor(confs)
                     
-                    outputs = deepsort.update(xywhs, confss, oids, im0)
-                    print("Current active IDs:", [t.track_id for t in deepsort.tracker.tracks])
+                    ds = deepsorts[camera_id]
+                    outputs = ds.update(xywhs, confss, oids, im0)
+                    print(f"[cam {camera_id}] Current active IDs:", [t.track_id for t in ds.tracker.tracks])
 
                     if len(outputs) > 0:
                         bbox_xyxy = outputs[:, :4]
                         identities = outputs[:, -2]
                         object_id = outputs[:, -1]
 
-                        draw_boxes(im0, bbox_xyxy, names, object_id,identities)
+                        data_deque_cam = deques_per_cam[camera_id]
+                        draw_boxes(im0, bbox_xyxy, names, object_id, identities, data_deque_cam)
                         
                         # ---- JSON dump the tracking data for this frame ----
                         tracked_objects = []
@@ -324,7 +362,8 @@ def detect(save_img=False):
                                     "class": int(cls)    # object class
                                 })
                         if tracked_objects:
-                            print("JSON_OUTPUT:" + json.dumps(tracked_objects))  # prefix helps filtering
+                            payload = {"camera_id": camera_id, "objects": tracked_objects}
+                            print("JSON_OUTPUT:" + json.dumps(payload))
                         
                 
                 # Print time (inference + NMS)
